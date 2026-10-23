@@ -1,0 +1,9 @@
+.venv/
+.env
+__pycache__/
+devices.json
+tinytuya.json
+tuya-raw.json
+snapshot.json
+frontend/node_modules/
+frontend/dist/

@@ -1,0 +1,20 @@
+services:
+  petfeeder:
+    build: .
+    container_name: petfeeder
+    env_file: .env
+    # Host networking so the app can hear the feeder's LAN broadcasts and find it if its IP
+    # changes. Still only reachable from this machine; cloudflared points at http://localhost:8090
+    network_mode: host
+    command: ["uvicorn", "app:app", "--host", "127.0.0.1", "--port", "8090",
+              "--proxy-headers", "--forwarded-allow-ips", "*"]
+    # Run as the owner of .env so a rediscovered DEVICE_IP can be written back to it
+    user: "1000:1000"
+    volumes:
+      - ./.env:/app/.env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz')"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
