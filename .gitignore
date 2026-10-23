@@ -7,3 +7,4 @@ tuya-raw.json
 snapshot.json
 frontend/node_modules/
 frontend/dist/
+data/

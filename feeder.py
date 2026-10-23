@@ -72,6 +72,16 @@ def encode_meal_plan(meals):
     return base64.b64encode(bytes(raw)).decode()
 
 
+def _decode_feed_report(value):
+    # Genio reports source * 10 + portions: 11 = scheduled feed of 1, 21 = manual feed of 1
+    if not isinstance(value, int) or value <= 0:
+        return {"last_feed_portions": None, "last_feed_source": None}
+    return {
+        "last_feed_portions": value % 10,
+        "last_feed_source": {1: "scheduled", 2: "manual"}.get(value // 10),
+    }
+
+
 class Feeder:
     def __init__(self):
         self.dp = {
@@ -79,10 +89,13 @@ class Feeder:
             for name, default in [("meal_plan", 1), ("manual_feed", 3), ("feed_state", 4),
                                   ("fault", 14), ("feed_report", 15)]
         }
-        # "portions": manual feed DP takes a portion count. "trigger": it's a boolean that
-        # dispenses one portion per press (Genio), so we press it once per portion.
+        # "portions": manual feed DP takes a portion count. "trigger": it's a boolean that turns
+        # the tray one compartment per press (Genio).
         self.feed_trigger = os.environ.get("MANUAL_FEED_MODE", "portions") == "trigger"
-        self.trigger_gap = float(os.environ.get("FEED_TRIGGER_GAP", 5))
+        # Time for the tray to finish turning before the next press (it takes ~15s)
+        self.turn_time = float(os.environ.get("TRAY_TURN_SECONDS", 20))
+        self.job = None  # background tray turn: {"target", "total", "done", "running", "error"}
+        self._last_dps = {}
         self.device_id = os.environ["DEVICE_ID"]
         self._last_scan = 0.0
         self._connect(os.environ["DEVICE_IP"])
@@ -135,8 +148,16 @@ class Feeder:
         return result
 
     def raw_status(self):
-        with self.lock:
-            return self._with_rediscovery(self._read_dps)
+        # While the tray is turning the lock is held for a while; report the last known state
+        if not self.lock.acquire(timeout=1):
+            if self._last_dps:
+                return self._last_dps
+            self.lock.acquire()
+        try:
+            self._last_dps = self._with_rediscovery(self._read_dps)
+            return self._last_dps
+        finally:
+            self.lock.release()
 
     def _read_dps(self):
         dps = dict(self._check(self.device.status()).get("dps", {}))
@@ -153,29 +174,64 @@ class Feeder:
             "meals": decode_meal_plan(dps.get(self.dp["meal_plan"])),
             "feed_state": dps.get(self.dp["feed_state"]),
             "fault": dps.get(self.dp["fault"]),
-            "last_feed_portions": dps.get(self.dp["feed_report"]),
+            **_decode_feed_report(dps.get(self.dp["feed_report"])),
+            "feed_mode": "trigger" if self.feed_trigger else "portions",
+            "job": self.job,
             "dps": dps,
         }
 
-    def feed(self, portions):
+    def _press(self):
+        """Press quick feed; the feeder acknowledges straight away and then turns the tray."""
+        self._check(self.device.set_value(self.dp["manual_feed"], True))
+
+    def _wait_for_turn(self):
+        """Give the tray time to turn. The feed report only arrives when its value changes
+        (e.g. scheduled -> manual), so it can end the wait early but can't be relied on."""
+        d = self.device
+        d.set_socketPersistent(True)
+        try:
+            end = time.time() + self.turn_time
+            while time.time() < end:
+                msg = d.receive()
+                if isinstance(msg, dict) and self.dp["feed_report"] in (msg.get("dps") or {}):
+                    return
+        finally:
+            d.set_socketPersistent(False)
+            d.close()
+
+    def feed(self, portions=1):
         if not 1 <= portions <= 12:
             raise ValueError("portions must be 1-12")
         with self.lock:
             if not self.feed_trigger:
                 self._with_rediscovery(lambda: self._check(self.device.set_value(self.dp["manual_feed"], portions)))
-                return
-            # Count presses so a retry after rediscovery only sends the remaining ones
-            done = 0
+                return portions
+            # One press = the next compartment; more presses would only rotate past full ones
+            self._with_rediscovery(self._press)
+            self._wait_for_turn()
+            return 1
 
-            def press_remaining():
-                nonlocal done
-                while done < portions:
-                    if done:
-                        time.sleep(self.trigger_gap)
-                    self._check(self.device.set_value(self.dp["manual_feed"], True))
-                    done += 1
+    def turn(self, steps, on_step):
+        """Turn the tray `steps` compartments in the background, calling on_step after each."""
+        if self.job and self.job["running"]:
+            raise ValueError("The tray is already turning")
+        self.job = {"total": steps, "done": 0, "running": True, "error": None}
+        threading.Thread(target=self._run_turn, args=(steps, on_step), daemon=True).start()
 
-            self._with_rediscovery(press_remaining)
+    def _run_turn(self, steps, on_step):
+        job = self.job
+        try:
+            for _ in range(steps):
+                with self.lock:
+                    self._with_rediscovery(self._press)
+                    on_step()
+                    job["done"] += 1
+                    self._wait_for_turn()
+        except Exception as e:
+            log.warning("Tray turn stopped: %s", e)
+            job["error"] = str(e)
+        finally:
+            job["running"] = False
 
     def set_meals(self, meals):
         value = encode_meal_plan(meals)

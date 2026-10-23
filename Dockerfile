@@ -13,7 +13,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY feeder.py app.py scan.py ./
+COPY feeder.py tray.py app.py scan.py ./
 COPY --from=frontend /frontend/dist ./static
 
 RUN useradd --system --uid 10001 app

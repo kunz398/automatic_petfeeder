@@ -3,7 +3,7 @@ import { api } from "../api.js";
 import { fmtTime, nextMeal, relative } from "../schedule.js";
 import Stepper from "./Stepper.jsx";
 
-export default function FeedCard({ status, error, refreshing, onRefresh, guarded, notify }) {
+export default function FeedCard({ status, error, refreshing, onRefresh, guarded, notify, onFeeding }) {
   const [portions, setPortions] = useState(1);
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -26,18 +26,23 @@ export default function FeedCard({ status, error, refreshing, onRefresh, guarded
     if (!armed) return setArmed(true);
     setArmed(false);
     setBusy(true);
+    onFeeding?.(true);
     try {
       await guarded(() => api("/api/feed", { method: "POST", body: { portions } }));
-      notify(`Dispensing ${portions} portion${portions > 1 ? "s" : ""} 🍽️`, "success");
-      setTimeout(onRefresh, 4000);
+      notify(trigger ? "Fed: the tray turned to the next compartment 🍽️" : `Dispensing ${portions} portion${portions > 1 ? "s" : ""} 🍽️`, "success");
+      onRefresh();
     } catch (e) {
       notify(e.message, "error");
     } finally {
       setBusy(false);
+      onFeeding?.(false);
     }
   }
 
   const online = !error && status;
+  // Tray feeders (Genio): one press turns to the next compartment, so no portion count
+  const trigger = status?.feed_mode === "trigger";
+  const turning = !!status?.job?.running;
   const next = status ? nextMeal(status.meals) : null;
   const fault = status?.fault && status.fault !== 0 && status.fault !== "0" ? status.fault : null;
 
@@ -66,18 +71,22 @@ export default function FeedCard({ status, error, refreshing, onRefresh, guarded
         <div className="stat">
           <span className="stat-label">Last feed</span>
           <span className="stat-value">{status?.last_feed_portions ?? "—"}</span>
-          <span className="stat-sub">{status?.last_feed_portions != null ? "portions" : "No report yet"}</span>
+          <span className="stat-sub">
+            {status?.last_feed_portions != null
+              ? `portion${status.last_feed_portions > 1 ? "s" : ""}${status.last_feed_source ? ` · ${status.last_feed_source}` : ""}`
+              : "No report yet"}
+          </span>
         </div>
       </div>
 
       <div className="feed-row">
-        <Stepper value={portions} onChange={setPortions} label="Portions" size="large" />
+        {!trigger && <Stepper value={portions} onChange={setPortions} label="Portions" size="large" />}
         <button
           className={`primary feed-btn ${armed ? "armed" : ""}`}
           onClick={feed}
-          disabled={busy || !online}
+          disabled={busy || !online || turning}
         >
-          {busy ? "Feeding…" : armed ? `Tap to confirm (${portions})` : "Feed now"}
+          {busy ? "Feeding… waiting for the tray" : armed ? (trigger ? "Tap to confirm" : `Tap to confirm (${portions})`) : "Feed now"}
         </button>
       </div>
     </section>

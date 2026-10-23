@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 # override=True: .env is mounted and may hold a newer DEVICE_IP than the container env
 load_dotenv(override=True)
 
-from feeder import Feeder  # noqa: E402  (needs env loaded)
+import tray  # noqa: E402
+from feeder import Feeder, decode_meal_plan  # noqa: E402  (needs env loaded)
 
 APP_PASSWORD = os.environ["APP_PASSWORD"]
 SESSION_SECRET = os.environ["SESSION_SECRET"].encode()
@@ -45,6 +46,15 @@ class Login(BaseModel):
 
 class Feed(BaseModel):
     portions: int = Field(ge=1, le=12)
+
+
+class TrayUpdate(BaseModel):
+    open: int | None = Field(None, ge=1, le=tray.COMPARTMENTS)
+    filled: list[bool] | None = Field(None, min_length=tray.COMPARTMENTS, max_length=tray.COMPARTMENTS)
+
+
+class TrayGoto(BaseModel):
+    compartment: int = Field(ge=1, le=tray.COMPARTMENTS)
 
 
 class Meal(BaseModel):
@@ -91,13 +101,39 @@ def logout(response: Response):
 
 @app.get("/api/status", dependencies=[Depends(require_login)])
 def status():
-    return _device_call(feeder.status)
+    s = _device_call(feeder.status)
+    s["tray"] = tray.sync(s["meals"])
+    return s
+
+
+def _sync_tray():
+    # Count scheduled feeds up to now before recording a new one, so they stay in order
+    tray.sync(decode_meal_plan(feeder._last_dps.get(feeder.dp["meal_plan"])))
 
 
 @app.post("/api/feed", dependencies=[Depends(require_login)])
 def feed(body: Feed):
+    if feeder.job and feeder.job["running"]:
+        raise HTTPException(409, "The tray is turning, wait for it to finish")
+    _sync_tray()
     _device_call(feeder.feed, body.portions)
+    if feeder.feed_trigger:
+        tray.fed(1)
     return {"ok": True}
+
+
+@app.put("/api/tray", dependencies=[Depends(require_login)])
+def set_tray(body: TrayUpdate):
+    return tray.update(body.open, body.filled)
+
+
+@app.post("/api/tray/goto", dependencies=[Depends(require_login)])
+def goto(body: TrayGoto):
+    _sync_tray()
+    steps = tray.steps_to(body.compartment)
+    if steps:
+        _device_call(feeder.turn, steps, tray.turned)
+    return {"steps": steps}
 
 
 @app.put("/api/meals", dependencies=[Depends(require_login)])

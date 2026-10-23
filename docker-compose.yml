@@ -12,6 +12,8 @@ services:
     user: "1000:1000"
     volumes:
       - ./.env:/app/.env
+      - ./data:/app/data            # tray position (data/tray.json)
+      - /etc/localtime:/etc/localtime:ro   # host timezone, for working out scheduled feeds
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz')"]

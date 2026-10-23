@@ -3,7 +3,9 @@ import { api, AuthError } from "./api.js";
 import Login from "./components/Login.jsx";
 import FeedCard from "./components/FeedCard.jsx";
 import Schedule from "./components/Schedule.jsx";
+import TrayCard from "./components/TrayCard.jsx";
 import Toast from "./components/Toast.jsx";
+import CatIcon from "./components/CatIcon.jsx";
 
 export default function App() {
   // "loading" | "login" | "ready"
@@ -12,6 +14,7 @@ export default function App() {
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState(null);
+  const [feeding, setFeeding] = useState(false);
 
   const notify = useCallback((msg, kind = "info") => setToast({ msg, kind, id: Date.now() }), []);
 
@@ -33,6 +36,22 @@ export default function App() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Follow the tray while it turns, then report how it went
+  const turning = !!status?.job?.running;
+  const [wasTurning, setWasTurning] = useState(false);
+  useEffect(() => {
+    if (turning) {
+      setWasTurning(true);
+      const t = setTimeout(load, 3000);
+      return () => clearTimeout(t);
+    }
+    if (wasTurning) {
+      setWasTurning(false);
+      if (status?.job?.error) notify(status.job.error, "error");
+      else notify("Tray is in position ✓", "success");
+    }
+  }, [status, turning, wasTurning, load, notify]);
 
   async function logout() {
     await api("/api/logout", { method: "POST" }).catch(() => {});
@@ -57,10 +76,10 @@ export default function App() {
     <div className="shell">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden>🐾</span>
+          <span className="brand-mark"><CatIcon /></span>
           <div>
             <h1>Pet Feeder</h1>
-            <p>Mirabella Genio · 6 meal</p>
+            <p>Knight</p>
           </div>
         </div>
         {view === "ready" && (
@@ -83,7 +102,18 @@ export default function App() {
             onRefresh={load}
             guarded={guarded}
             notify={notify}
+            onFeeding={setFeeding}
           />
+          {status?.tray && (
+            <TrayCard
+              tray={status.tray}
+              job={status.job}
+              feeding={feeding}
+              onChanged={load}
+              guarded={guarded}
+              notify={notify}
+            />
+          )}
           {status && (
             <Schedule meals={status.meals} onSaved={load} guarded={guarded} notify={notify} />
           )}
