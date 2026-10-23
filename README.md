@@ -4,6 +4,8 @@ Controls a Mirabella Genio smart 6 meal feeder (a Tuya device) **locally over Wi
 [tinytuya](https://github.com/jasonacox/tinytuya). Runs in Docker on `127.0.0.1:8090`, exposed via
 Cloudflare Tunnel.
 
+![Pet Feeder web app: feed now, food tray dial and weekly meal schedule](docs/screenshot.webp)
+
 ## 1. Get the feeder's local key (one-time)
 
 The feeder encrypts LAN traffic with a "local key" that only Tuya's cloud knows, so you need a free
